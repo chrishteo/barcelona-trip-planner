@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { MapContainer, TileLayer, Marker, Polyline, useMap } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
+import { QRCodeCanvas } from "qrcode.react";
 
 // ---- Persistence key ----
 const STORAGE_KEY = "barcelona-trip-planner:v1";
@@ -67,11 +68,11 @@ function toICS(plan, tripName){
   return ics;
 }
 
-// --- Share-link helpers (encode plan into URL) ---
+// --- Share-link helpers (URL-safe) ---
 function encodeForUrl(obj) {
   const json = JSON.stringify(obj);
   const base64 = btoa(unescape(encodeURIComponent(json)));
-  return encodeURIComponent(base64); // URL-safe
+  return encodeURIComponent(base64); // URL-safe to survive Messenger, etc.
 }
 function decodeFromUrlParam(s) {
   try {
@@ -84,7 +85,7 @@ async function copyToClipboard(text) {
   try {
     if (navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(text);
-      alert("Share link copied! Open it on your other device.");
+      alert("Share link copied! You can also scan the QR code.");
     } else {
       window.prompt("Copy this link:", text);
     }
@@ -127,6 +128,10 @@ export default function BarcelonaTripPlanner(){
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
+  // QR modal
+  const [showQR, setShowQR] = useState(false);
+  const [shareUrl, setShareUrl] = useState("");
+
   // Keep selectedDay valid when date range changes
   useEffect(()=>{
     if(!days.includes(selectedDay)) setSelectedDay(days[0]);
@@ -161,7 +166,6 @@ export default function BarcelonaTripPlanner(){
       window.location.pathname +
       (params.toString() ? "?" + params.toString() : "");
     window.history.replaceState({}, "", newUrl);
-    // Saved automatically by the persistence effect
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // run once
 
@@ -249,6 +253,14 @@ export default function BarcelonaTripPlanner(){
     reader.readAsText(file);
   }
 
+  function openShare() {
+    const payload = { tripName, startDate, endDate, selectedDay, plan };
+    const url = `${window.location.origin}${window.location.pathname}?data=${encodeForUrl(payload)}`;
+    setShareUrl(url);
+    copyToClipboard(url);
+    setShowQR(true);
+  }
+
   return (
     <div className="min-h-screen w-full grid grid-cols-1 lg:grid-cols-12 gap-4 p-4 bg-slate-50">
       {/* Left: Controls */}
@@ -276,16 +288,8 @@ export default function BarcelonaTripPlanner(){
             <label className="px-3 py-2 rounded-xl bg-slate-200 hover:bg-slate-300 cursor-pointer">Import JSON
               <input type="file" accept="application/json" onChange={importJSON} className="hidden" />
             </label>
-            {/* Share link button */}
-            <button
-              onClick={() => {
-                const payload = { tripName, startDate, endDate, selectedDay, plan };
-                const url = `${window.location.origin}${window.location.pathname}?data=${encodeForUrl(payload)}`;
-                copyToClipboard(url);
-              }}
-              className="px-3 py-2 rounded-xl bg-indigo-600 text-white hover:bg-indigo-700"
-            >
-              Copy share link
+            <button onClick={openShare} className="px-3 py-2 rounded-xl bg-indigo-600 text-white hover:bg-indigo-700">
+              Share trip (link + QR)
             </button>
           </div>
         </div>
@@ -375,6 +379,28 @@ export default function BarcelonaTripPlanner(){
       <div className="lg:col-span-12 text-center text-xs text-slate-500">
         Built with React, Leaflet, and OpenStreetMap tiles. Routes are straight-lines for simplicity. For turn-by-turn routing, replace Polyline with an OSRM/Mapbox route fetch.
       </div>
+
+      {/* QR Modal */}
+      {showQR && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl shadow-xl p-5 w-full max-w-sm text-center space-y-3">
+            <h3 className="text-lg font-semibold">Scan this to open your trip</h3>
+            <div className="mx-auto w-fit bg-white p-3 rounded-xl">
+              <QRCodeCanvas value={shareUrl || window.location.href} size={256} includeMargin />
+            </div>
+            <div className="text-xs break-all text-slate-600 max-h-24 overflow-auto">{shareUrl}</div>
+            <div className="flex gap-2 justify-center">
+              <a href={shareUrl} target="_blank" rel="noreferrer" className="px-3 py-2 rounded-xl bg-indigo-600 text-white hover:bg-indigo-700">
+                Open link
+              </a>
+              <button onClick={()=>setShowQR(false)} className="px-3 py-2 rounded-xl bg-slate-200 hover:bg-slate-300">
+                Close
+              </button>
+            </div>
+            <div className="text-[10px] text-slate-500">Tip: if a chat app breaks long links, scan the QR instead.</div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
