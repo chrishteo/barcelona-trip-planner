@@ -3,16 +3,16 @@ import { MapContainer, TileLayer, Marker, Polyline, useMap } from "react-leaflet
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
 
-<h1 className="text-4xl text-emerald-600">Tailwind Test</h1>
+// ---- Persistence key ----
+const STORAGE_KEY = "barcelona-trip-planner:v1";
+
 // Basic Leaflet marker fix for CRA + Webpack
 const DefaultIcon = L.icon({
-  iconUrl:
-    "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
+  iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
   iconSize: [25, 41],
   iconAnchor: [12, 41],
   popupAnchor: [1, -34],
-  shadowUrl:
-    "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
+  shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
   shadowSize: [41, 41],
 });
 L.Marker.prototype.options.icon = DefaultIcon;
@@ -23,56 +23,46 @@ L.Marker.prototype.options.icon = DefaultIcon;
 /** @typedef {{ [isoDate: string]: Stop[] }} Plan */
 
 // --- Helpers ---
-function formatDate(d){
-  return d.toISOString().slice(0,10);
-}
-function parseDate(s){
-  return new Date(s + 'T00:00:00');
-}
+function formatDate(d){ return d.toISOString().slice(0,10); }
+function parseDate(s){ return new Date(s + "T00:00:00"); }
 function daterange(start, end){
-  const out=[]; let d = parseDate(start);
-  const e = parseDate(end);
+  const out=[]; let d = parseDate(start); const e = parseDate(end);
   while(d<=e){ out.push(formatDate(d)); d = new Date(d.getTime()+86400000); }
   return out;
 }
 function haversine(lat1, lon1, lat2, lon2){
-  const R = 6371e3; // m
-  const toRad = (x)=>x*Math.PI/180;
-  const dphi = toRad(lat2-lat1);
-  const dl = toRad(lon2-lon1);
+  const R = 6371e3, toRad = x=>x*Math.PI/180;
+  const dphi = toRad(lat2-lat1), dl = toRad(lon2-lon1);
   const a = Math.sin(dphi/2)**2 + Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dl/2)**2;
-  const c = 2*Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-  return R*c; // meters
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
 function estimateWalkTimeMeters(m){
   const speed = 1.25; // m/s (~4.5 km/h)
-  const sec = m / speed;
-  const h = Math.floor(sec/3600);
-  const min = Math.round((sec%3600)/60);
+  const sec = m / speed; const h = Math.floor(sec/3600); const min = Math.round((sec%3600)/60);
   return (h?`${h}h `:"") + `${min}m`;
 }
 function download(filename, text){
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([text], {type:'text/plain'}));
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], {type:"text/plain"}));
   a.download = filename; a.click(); URL.revokeObjectURL(a.href);
 }
 function toICS(plan, tripName){
   const nl = "\r\n";
-  const esc = (s)=> String(s||"").replace(/[,;\\]/g, (m)=>({',':'\\,',';':'\\;','\\':'\\\\'}[m]));
-  const now = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, 'Z');
+  const esc = s => String(s||"").replace(/[,;\\]/g, m => ({",":"\\,", ";":"\\;", "\\":"\\\\"}[m]));
+  const now = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "Z");
   let ics = `BEGIN:VCALENDAR${nl}VERSION:2.0${nl}PRODID:-//TripPlanner//EN${nl}`;
   Object.entries(plan).forEach(([date, stops])=>{
     stops.forEach((s, idx)=>{
-      const dt = date.replace(/-/g, '');
-      const start = `${dt}T${s.start.replace(':','')}00`;
-      const end = `${dt}T${s.end.replace(':','')}00`;
+      const dt = date.replace(/-/g, "");
+      const start = `${dt}T${s.start.replace(":","")}00`;
+      const end = `${dt}T${s.end.replace(":","")}00`;
       const uid = `${date}-${idx}-${Math.random().toString(36).slice(2)}@tripplanner`;
       const summary = `${esc(tripName)}: ${esc(s.place.name)}`;
-      const loc = `${s.place.lat},${s.place.lon} ${esc(s.place.address || '')}`;
-      const desc = esc(s.notes || '');
+      const loc = `${s.place.lat},${s.place.lon} ${esc(s.place.address || "")}`;
+      const desc = esc(s.notes || "");
       ics += `BEGIN:VEVENT${nl}DTSTAMP:${now}${nl}UID:${uid}${nl}DTSTART:${start}${nl}DTEND:${end}${nl}SUMMARY:${summary}${nl}LOCATION:${loc}${nl}DESCRIPTION:${desc}${nl}END:VEVENT${nl}`;
-    })
-  })
+    });
+  });
   ics += `END:VCALENDAR${nl}`;
   return ics;
 }
@@ -89,18 +79,41 @@ function FitToDayBounds({points}){
 }
 
 export default function BarcelonaTripPlanner(){
-  const [tripName, setTripName] = useState("Barcelona, September 2025");
-  const [startDate, setStartDate] = useState("2025-09-01");
-  const [endDate, setEndDate] = useState("2025-09-07");
+  // ---- Load initial state from localStorage (with sensible fallbacks) ----
+  const initial = (() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return null;
+      return JSON.parse(raw);
+    } catch { return null; }
+  })();
+
+  const [tripName, setTripName] = useState(initial?.tripName ?? "Barcelona, September 2025");
+  const [startDate, setStartDate] = useState(initial?.startDate ?? "2025-09-01");
+  const [endDate, setEndDate] = useState(initial?.endDate ?? "2025-09-07");
   const days = useMemo(()=>daterange(startDate, endDate), [startDate, endDate]);
-  const [selectedDay, setSelectedDay] = useState(()=>"2025-09-01");
-  const [plan, setPlan] = useState(/** @type {Plan} */({}));
+  const [selectedDay, setSelectedDay] = useState(
+    () => (initial?.selectedDay && days.includes(initial.selectedDay)) ? initial.selectedDay : (days[0] ?? "2025-09-01")
+  );
+  const [plan, setPlan] = useState(/** @type {Plan} */(initial?.plan ?? {}));
   const [query, setQuery] = useState("");
   const [results, setResults] = useState(/** @type {Place[]} */([]));
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  useEffect(()=>{ if(!days.includes(selectedDay)) setSelectedDay(days[0]); },[days, selectedDay]);
+  // Keep selectedDay valid when date range changes
+  useEffect(()=>{
+    if(!days.includes(selectedDay)) setSelectedDay(days[0]);
+  }, [days, selectedDay]);
+
+  // ---- Persist to localStorage whenever key bits change ----
+  useEffect(()=>{
+    try{
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        tripName, startDate, endDate, selectedDay, plan
+      }));
+    }catch{}
+  }, [tripName, startDate, endDate, selectedDay, plan]);
 
   // Search places via Nominatim
   useEffect(()=>{
@@ -117,9 +130,15 @@ export default function BarcelonaTripPlanner(){
         const res = await fetch(url.toString(), { headers: { "Accept": "application/json", "User-Agent": "TripPlanner/1.0 (chatgpt)" }});
         const data = await res.json();
         if(!active) return;
-        const places = data.map((d)=>({ id: d.place_id+"", name: d.display_name.split(",")[0], lat: parseFloat(d.lat), lon: parseFloat(d.lon), address: d.display_name }));
+        const places = data.map(d=>({
+          id: String(d.place_id),
+          name: d.display_name.split(",")[0],
+          lat: parseFloat(d.lat),
+          lon: parseFloat(d.lon),
+          address: d.display_name
+        }));
         setResults(places);
-      }catch(e){
+      }catch{
         setError("Search failed. Try again or check your network.");
       }finally{ setLoading(false); }
     }
@@ -159,10 +178,10 @@ export default function BarcelonaTripPlanner(){
   }
   function exportICS(){
     const ics = toICS(plan, tripName);
-    download(`${tripName.replace(/\s+/g,'_')}.ics`, ics);
+    download(`${tripName.replace(/\s+/g,"_")}.ics`, ics);
   }
   function exportJSON(){
-    download(`${tripName.replace(/\s+/g,'_')}.json`, JSON.stringify({tripName, startDate, endDate, plan}, null, 2));
+    download(`${tripName.replace(/\s+/g,"_")}.json`, JSON.stringify({tripName, startDate, endDate, selectedDay, plan}, null, 2));
   }
   function importJSON(evt){
     const file = evt.target.files?.[0]; if(!file) return;
@@ -170,18 +189,18 @@ export default function BarcelonaTripPlanner(){
     reader.onload = ()=>{
       try{
         const data = JSON.parse(String(reader.result));
-        setTripName(data.tripName||tripName);
-        setStartDate(data.startDate||startDate);
-        setEndDate(data.endDate||endDate);
-        setPlan(data.plan||{});
-      }catch(e){ alert("Invalid JSON"); }
+        setTripName(data.tripName ?? tripName);
+        setStartDate(data.startDate ?? startDate);
+        setEndDate(data.endDate ?? endDate);
+        setPlan(data.plan ?? {});
+        if(data.selectedDay){ setSelectedDay(data.selectedDay); }
+      }catch{ alert("Invalid JSON"); }
     };
     reader.readAsText(file);
   }
 
   return (
     <div className="min-h-screen w-full grid grid-cols-1 lg:grid-cols-12 gap-4 p-4 bg-slate-50">
-      <h1 className="text-4xl text-emerald-600">Tailwind Test</h1>
       {/* Left: Controls */}
       <div className="lg:col-span-3 space-y-4">
         <div className="bg-white rounded-2xl shadow p-4 space-y-3">
@@ -201,7 +220,7 @@ export default function BarcelonaTripPlanner(){
               {days.map(d=>(<option key={d} value={d}>{d}</option>))}
             </select>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <button onClick={exportICS} className="px-3 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700">Export .ics</button>
             <button onClick={exportJSON} className="px-3 py-2 rounded-xl bg-slate-700 text-white hover:bg-slate-800">Export JSON</button>
             <label className="px-3 py-2 rounded-xl bg-slate-200 hover:bg-slate-300 cursor-pointer">Import JSON
@@ -245,17 +264,13 @@ export default function BarcelonaTripPlanner(){
           {coords.map((c,i)=>(
             <Marker key={i} position={c}></Marker>
           ))}
-          {coords.length>1 && (
-            <Polyline positions={coords} />
-          )}
+          {coords.length>1 && <Polyline positions={coords} />}
           <FitToDayBounds points={coords} />
         </MapContainer>
         <div className="absolute top-2 left-2 bg-white/90 backdrop-blur rounded-xl px-3 py-1 text-sm shadow">
-          {coords.length>1 ? (
-            <div>
-              Distance (straight-line): {(totalMeters/1000).toFixed(2)} km · Est. walk: {estimateWalkTimeMeters(totalMeters)}
-            </div>
-          ) : <div>Add at least two places to see a route</div>}
+          {coords.length>1
+            ? <div>Distance (straight-line): {(totalMeters/1000).toFixed(2)} km · Est. walk: {estimateWalkTimeMeters(totalMeters)}</div>
+            : <div>Add at least two places to see a route</div>}
         </div>
       </div>
 
