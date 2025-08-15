@@ -70,15 +70,15 @@ function toICS(plan, tripName){
 // --- Share-link helpers (encode plan into URL) ---
 function encodeForUrl(obj) {
   const json = JSON.stringify(obj);
-  // base64 of UTF-8 string
-  return btoa(unescape(encodeURIComponent(json)));
+  const base64 = btoa(unescape(encodeURIComponent(json)));
+  return encodeURIComponent(base64); // URL-safe
 }
 function decodeFromUrlParam(s) {
   try {
-    return JSON.parse(decodeURIComponent(escape(atob(s))));
-  } catch {
-    return null;
-  }
+    const base64 = decodeURIComponent(s);
+    const json = decodeURIComponent(escape(atob(base64)));
+    return JSON.parse(json);
+  } catch { return null; }
 }
 async function copyToClipboard(text) {
   try {
