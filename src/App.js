@@ -169,6 +169,14 @@ export default function BarcelonaTripPlanner(){
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // run once
 
+
+  useEffect(() => {
+    if (showQR) {
+      const prev = document.body.style.overflow;
+      document.body.style.overflow = "hidden";
+      return () => { document.body.style.overflow = prev; };
+    }
+  }, [showQR]);
   // Search places via Nominatim
   useEffect(()=>{
     let active = true;
@@ -382,7 +390,7 @@ export default function BarcelonaTripPlanner(){
 
       {/* QR Modal */}
       {showQR && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-[9999]">
           <div className="bg-white rounded-2xl shadow-xl p-5 w-full max-w-sm text-center space-y-3">
             <h3 className="text-lg font-semibold">Scan this to open your trip</h3>
             <div className="mx-auto w-fit bg-white p-3 rounded-xl">
