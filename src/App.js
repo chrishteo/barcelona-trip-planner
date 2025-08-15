@@ -67,6 +67,32 @@ function toICS(plan, tripName){
   return ics;
 }
 
+// --- Share-link helpers (encode plan into URL) ---
+function encodeForUrl(obj) {
+  const json = JSON.stringify(obj);
+  // base64 of UTF-8 string
+  return btoa(unescape(encodeURIComponent(json)));
+}
+function decodeFromUrlParam(s) {
+  try {
+    return JSON.parse(decodeURIComponent(escape(atob(s))));
+  } catch {
+    return null;
+  }
+}
+async function copyToClipboard(text) {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      alert("Share link copied! Open it on your other device.");
+    } else {
+      window.prompt("Copy this link:", text);
+    }
+  } catch {
+    window.prompt("Copy this link:", text);
+  }
+}
+
 function FitToDayBounds({points}){
   const map = useMap();
   useEffect(()=>{
@@ -114,6 +140,30 @@ export default function BarcelonaTripPlanner(){
       }));
     }catch{}
   }, [tripName, startDate, endDate, selectedDay, plan]);
+
+  // ---- Import from ?data= on first load (share link) ----
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const encoded = params.get("data");
+    if (!encoded) return;
+    const incoming = decodeFromUrlParam(encoded);
+    if (!incoming) return;
+
+    setTripName(incoming.tripName ?? tripName);
+    setStartDate(incoming.startDate ?? startDate);
+    setEndDate(incoming.endDate ?? endDate);
+    setPlan(incoming.plan ?? {});
+    if (incoming.selectedDay) setSelectedDay(incoming.selectedDay);
+
+    // Clean the URL
+    params.delete("data");
+    const newUrl =
+      window.location.pathname +
+      (params.toString() ? "?" + params.toString() : "");
+    window.history.replaceState({}, "", newUrl);
+    // Saved automatically by the persistence effect
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // run once
 
   // Search places via Nominatim
   useEffect(()=>{
@@ -226,6 +276,17 @@ export default function BarcelonaTripPlanner(){
             <label className="px-3 py-2 rounded-xl bg-slate-200 hover:bg-slate-300 cursor-pointer">Import JSON
               <input type="file" accept="application/json" onChange={importJSON} className="hidden" />
             </label>
+            {/* Share link button */}
+            <button
+              onClick={() => {
+                const payload = { tripName, startDate, endDate, selectedDay, plan };
+                const url = `${window.location.origin}${window.location.pathname}?data=${encodeForUrl(payload)}`;
+                copyToClipboard(url);
+              }}
+              className="px-3 py-2 rounded-xl bg-indigo-600 text-white hover:bg-indigo-700"
+            >
+              Copy share link
+            </button>
           </div>
         </div>
 
