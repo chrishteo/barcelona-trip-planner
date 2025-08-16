@@ -1,22 +1,34 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { MapContainer, TileLayer, Marker, Polyline, useMap } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
 import { QRCodeCanvas } from "qrcode.react";
+import jsPDF from "jspdf";
+import html2canvas from "html2canvas";
 
 // ---- Persistence key ----
-const STORAGE_KEY = "barcelona-trip-planner:v2";
+const STORAGE_KEY = "barcelona-trip-planner:v3";
 
-// Basic Leaflet marker fix for CRA + Webpack
-const DefaultIcon = L.icon({
+// ---------- Icons ----------
+const shadowUrl = "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png";
+const stopIcon = L.icon({
   iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
   iconSize: [25, 41],
   iconAnchor: [12, 41],
   popupAnchor: [1, -34],
-  shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
+  shadowUrl,
   shadowSize: [41, 41],
 });
-L.Marker.prototype.options.icon = DefaultIcon;
+const hotelIcon = L.icon({
+  iconUrl: "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-gold.png",
+  iconSize: [25, 41],
+  iconAnchor: [12, 41],
+  popupAnchor: [1, -34],
+  shadowUrl,
+  shadowSize: [41, 41],
+});
+// default marker fix for CRA (kept for safety)
+L.Marker.prototype.options.icon = stopIcon;
 
 // --- Types ---
 /** @typedef {{ id:string, name:string, lat:number, lon:number, address?:string }} Place */
@@ -35,7 +47,7 @@ function haversine(lat1, lon1, lat2, lon2){
   const R = 6371e3, toRad = x=>x*Math.PI/180;
   const dphi = toRad(lat2-lat1), dl = toRad(lon2-lon1);
   const a = Math.sin(dphi/2)**2 + Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dl/2)**2;
-  return R * 2 * Math.atan2(Math.sqrt(1-a), Math.sqrt(a));
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
 function estimateHM(seconds){
   if (seconds == null) return "-";
@@ -126,6 +138,15 @@ function FitToDayBounds({points}){
   return null;
 }
 
+// ---------- Colors per mode & fallback ----------
+const ROUTE_STYLE = {
+  transit:  { color: "#2563eb", weight: 5 }, // blue
+  foot:     { color: "#16a34a", weight: 4 }, // green
+  bike:     { color: "#06b6d4", weight: 4 }, // cyan
+  driving:  { color: "#6b7280", weight: 4 }, // gray
+  fallback: { color: "#dc2626", weight: 3, dashArray: "6 6" } // dashed red
+};
+
 export default function BarcelonaTripPlanner(){
   // ---- Load initial state from localStorage (with sensible fallbacks) ----
   const initial = (() => {
@@ -158,9 +179,12 @@ export default function BarcelonaTripPlanner(){
   const [showQR, setShowQR] = useState(false);
   const [shareUrl, setShareUrl] = useState("");
 
-  // Routing results
-  const [segments, setSegments] = useState([]); // [{ line:[lat,lng][], meters, seconds }]
+  // Routing results (segments & optional transit steps)
+  const [segments, setSegments] = useState([]); // [{ line:[lat,lng][], meters, seconds, style, steps? }]
   const [routingError, setRoutingError] = useState("");
+
+  // PDF export ref
+  const printRef = useRef(null);
 
   // Keep selectedDay valid when date range changes
   useEffect(()=>{
@@ -243,17 +267,18 @@ export default function BarcelonaTripPlanner(){
 
   const coords = effectiveStops.map(s => [s.place.lat, s.place.lon]);
 
-  // Fetch a route segment
+  // Fetch a route segment (with colored style & optional transit step details)
   async function fetchRoute(mode, from, to){
     if (mode === "transit") {
       const origin = `${from[0]},${from[1]}`;
       const destination = `${to[0]},${to[1]}`;
-      const r = await fetch(`/api/directions?origin=${encodeURIComponent(origin)}&destination=${encodeURIComponent(destination)}`);
+      // ask server to include steps if available (graceful if it ignores the flag)
+      const r = await fetch(`/api/directions?origin=${encodeURIComponent(origin)}&destination=${encodeURIComponent(destination)}&details=1`);
       if (!r.ok) throw new Error("transit route");
       const data = await r.json();
       if (!data?.overview_polyline) throw new Error("no polyline");
       const line = decodePolyline(data.overview_polyline); // [lat,lng][]
-      return { line, meters: data.meters ?? null, seconds: data.seconds ?? null };
+      return { line, meters: data.meters ?? null, seconds: data.seconds ?? null, style: ROUTE_STYLE.transit, steps: data.steps || null };
     }
     // OSRM for foot/driving/bike
     const profile = mode === "driving" ? "driving" : (mode === "bike" ? "bike" : "foot");
@@ -264,7 +289,8 @@ export default function BarcelonaTripPlanner(){
     const r0 = data.routes?.[0];
     if(!r0) throw new Error("no route");
     const line = r0.geometry.coordinates.map(([lng,lat])=>[lat,lng]);
-    return { line, meters: r0.distance, seconds: r0.duration };
+    const style = ROUTE_STYLE[profile === "foot" ? "foot" : profile] || ROUTE_STYLE.driving;
+    return { line, meters: r0.distance, seconds: r0.duration, style, steps: null };
   }
 
   // Build segments when coords/mode change
@@ -282,8 +308,8 @@ export default function BarcelonaTripPlanner(){
         }catch{
           // fallback straight line
           const m = haversine(coords[i][0], coords[i][1], coords[i+1][0], coords[i+1][1]);
-          segs.push({ line:[coords[i], coords[i+1]], meters:m, seconds: m/1.25 });
-          setRoutingError("Routing unavailable for some legs; showing straight lines.");
+          segs.push({ line:[coords[i], coords[i+1]], meters:m, seconds: m/1.25, style: ROUTE_STYLE.fallback, steps: null });
+          setRoutingError("Routing unavailable for some legs; showing dashed fallback lines.");
         }
       }
       if (!cancelled) setSegments(segs);
@@ -354,6 +380,23 @@ export default function BarcelonaTripPlanner(){
     setShowQR(true);
   }
 
+  // Export map + right panel to PDF
+  async function exportPDF() {
+    const el = printRef.current;
+    if (!el) return;
+    const canvas = await html2canvas(el, { scale: 2, useCORS: true, logging: false });
+    const imgData = canvas.toDataURL("image/png");
+    const pdf = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    const imgRatio = canvas.width / canvas.height;
+    const pageRatio = pageWidth / pageHeight;
+    let w = pageWidth, h = pageHeight;
+    if (imgRatio > pageRatio) { h = w / imgRatio; } else { w = h * imgRatio; }
+    pdf.addImage(imgData, "PNG", (pageWidth - w)/2, (pageHeight - h)/2, w, h);
+    pdf.save(`${tripName.replace(/\s+/g,"_")}_${selectedDay}.pdf`);
+  }
+
   // Lock scroll when modal open
   useEffect(() => {
     if (showQR) {
@@ -364,7 +407,7 @@ export default function BarcelonaTripPlanner(){
   }, [showQR]);
 
   return (
-    <div className="min-h-screen w-full grid grid-cols-1 lg:grid-cols-12 gap-4 p-4 bg-slate-50">
+    <div className="min-h-screen w-full grid grid-cols-1 lg:grid-cols-12 gap-4 p-4 bg-slate-50" ref={printRef}>
       {/* Left: Controls */}
       <div className="lg:col-span-3 space-y-4">
         <div className="bg-white rounded-2xl shadow p-4 space-y-3">
@@ -387,6 +430,7 @@ export default function BarcelonaTripPlanner(){
           <div className="flex flex-wrap gap-2">
             <button onClick={exportICS} className="px-3 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700">Export .ics</button>
             <button onClick={exportJSON} className="px-3 py-2 rounded-xl bg-slate-700 text-white hover:bg-slate-800">Export JSON</button>
+            <button onClick={exportPDF} className="px-3 py-2 rounded-xl bg-fuchsia-600 text-white hover:bg-fuchsia-700">Export PDF</button>
             <label className="px-3 py-2 rounded-xl bg-slate-200 hover:bg-slate-300 cursor-pointer">Import JSON
               <input type="file" accept="application/json" onChange={importJSON} className="hidden" />
             </label>
@@ -471,9 +515,17 @@ export default function BarcelonaTripPlanner(){
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
             url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
           />
-          {coords.map((c,i)=>( <Marker key={i} position={c}></Marker> ))}
-          {/* Routed polylines (transit or OSRM) */}
-          {segments.map((s, i) => (<Polyline key={i} positions={s.line} />))}
+          {effectiveStops.map((s,i)=>(
+            <Marker
+              key={i}
+              position={[s.place.lat, s.place.lon]}
+              icon={hotel && s.place.id === hotel.id ? hotelIcon : stopIcon}
+            />
+          ))}
+          {/* Colored polylines (transit or OSRM; dashed red on fallback) */}
+          {segments.map((s, i) => (
+            <Polyline key={i} positions={s.line} pathOptions={s.style || ROUTE_STYLE.driving} />
+          ))}
           <FitToDayBounds points={coords} />
         </MapContainer>
         <div className="absolute top-2 left-2 bg-white/90 backdrop-blur rounded-xl px-3 py-1 text-sm shadow">
@@ -518,11 +570,20 @@ export default function BarcelonaTripPlanner(){
           ))}
         </div>
 
-        {/* Per-leg breakdown */}
+        {/* Per-leg breakdown (with transit step details when available) */}
         {segments.length > 0 && (
-          <div className="mt-2 text-xs text-slate-500 space-y-1">
+          <div className="mt-2 text-xs text-slate-700 space-y-2">
             {segments.map((s,i)=>(
-              <div key={i}>Leg {i+1}: {formatDistance(s.meters)} · ~{Math.round((s.seconds||0)/60)} min</div>
+              <div key={i}>
+                <div className="font-medium">Leg {i+1}: {formatDistance(s.meters)} · ~{Math.round((s.seconds||0)/60)} min</div>
+                {s.steps && (
+                  <ul className="list-disc pl-4 space-y-0.5">
+                    {s.steps.map((st, idx) => (
+                      <li key={idx} dangerouslySetInnerHTML={{__html: stepLabel(st)}} />
+                    ))}
+                  </ul>
+                )}
+              </div>
             ))}
           </div>
         )}
@@ -558,4 +619,22 @@ export default function BarcelonaTripPlanner(){
       )}
     </div>
   );
+
+  // turn Google 'steps' into a compact label (HTML allowed)
+  function stepLabel(st) {
+    // If server returned Google steps, it usually looks like:
+    // { travel_mode: "WALKING" | "TRANSIT", html_instructions, transit_details? }
+    const mode = st.travel_mode || "";
+    if (mode === "TRANSIT" && st.transit_details) {
+      const t = st.transit_details;
+      const line = t.line?.short_name || t.line?.name || "Transit";
+      const vehicle = t.line?.vehicle?.type || "";
+      const from = t.departure_stop?.name || "";
+      const to = t.arrival_stop?.name || "";
+      const num = line ? ` (${line})` : "";
+      return `${vehicle}${num}: ${from} → ${to}`;
+    }
+    // default: render Google's human text if provided
+    return st.html_instructions || (mode ? mode.toLowerCase() : "step");
+  }
 }
