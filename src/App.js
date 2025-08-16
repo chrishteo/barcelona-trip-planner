@@ -27,7 +27,7 @@ const hotelIcon = L.icon({
   shadowUrl,
   shadowSize: [41, 41],
 });
-// default marker fix for CRA (kept for safety)
+// default marker fix for CRA
 L.Marker.prototype.options.icon = stopIcon;
 
 // --- Types ---
@@ -148,7 +148,7 @@ const ROUTE_STYLE = {
 };
 
 export default function BarcelonaTripPlanner(){
-  // ---- Load initial state from localStorage (with sensible fallbacks) ----
+  // ---- Load initial state ----
   const initial = (() => {
     try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "null"); }
     catch { return null; }
@@ -164,8 +164,8 @@ export default function BarcelonaTripPlanner(){
   const [plan, setPlan] = useState(/** @type {Plan} */(initial?.plan ?? {}));
 
   // Routing / hotel
-  const [routeMode, setRouteMode] = useState(initial?.routeMode ?? "foot"); // "foot" | "driving" | "bike" | "transit"
-  const [hotel, setHotel] = useState(initial?.hotel ?? null);               // Place | null
+  const [routeMode, setRouteMode] = useState(initial?.routeMode ?? "foot"); // "foot"|"driving"|"bike"|"transit"
+  const [hotel, setHotel] = useState(initial?.hotel ?? null);
   const [useHotelStart, setUseHotelStart] = useState(initial?.useHotelStart ?? true);
   const [useHotelEnd, setUseHotelEnd] = useState(initial?.useHotelEnd ?? true);
 
@@ -179,9 +179,13 @@ export default function BarcelonaTripPlanner(){
   const [showQR, setShowQR] = useState(false);
   const [shareUrl, setShareUrl] = useState("");
 
-  // Routing results (segments & optional transit steps)
+  // Routing results
   const [segments, setSegments] = useState([]); // [{ line:[lat,lng][], meters, seconds, style, steps? }]
   const [routingError, setRoutingError] = useState("");
+
+  // Show/hide routes & per-leg visibility
+  const [showRoutes, setShowRoutes] = useState(false);
+  const [visibleLegs, setVisibleLegs] = useState({}); // { [index]: boolean }
 
   // PDF export ref
   const printRef = useRef(null);
@@ -272,7 +276,6 @@ export default function BarcelonaTripPlanner(){
     if (mode === "transit") {
       const origin = `${from[0]},${from[1]}`;
       const destination = `${to[0]},${to[1]}`;
-      // ask server to include steps if available (graceful if it ignores the flag)
       const r = await fetch(`/api/directions?origin=${encodeURIComponent(origin)}&destination=${encodeURIComponent(destination)}&details=1`);
       if (!r.ok) throw new Error("transit route");
       const data = await r.json();
@@ -318,8 +321,20 @@ export default function BarcelonaTripPlanner(){
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDay, JSON.stringify(coords), routeMode]);
 
+  // Reset per-leg visibility when legs change or day changes (all OFF)
+  useEffect(() => {
+    const init = Object.fromEntries(segments.map((_, i) => [i, false]));
+    setVisibleLegs(init);
+  }, [selectedDay, segments.length]);
+
   const totalMeters = segments.reduce((a,s)=>a + (s?.meters||0), 0);
   const totalSeconds = segments.reduce((a,s)=>a + (s?.seconds||0), 0);
+
+  // Visible-only totals
+  const visibleMeters  = segments.reduce((a,s,i)=> a + (visibleLegs[i] ? (s?.meters||0) : 0), 0);
+  const visibleSeconds = segments.reduce((a,s,i)=> a + (visibleLegs[i] ? (s?.seconds||0) : 0), 0);
+
+  function setAllLegs(val){ setVisibleLegs(Object.fromEntries(segments.map((_, i) => [i, val]))); }
 
   // Mutators
   function addToDay(place){
@@ -440,7 +455,7 @@ export default function BarcelonaTripPlanner(){
           </div>
         </div>
 
-        {/* Hotel / Base + Travel Mode */}
+        {/* Hotel / Base + Travel Mode + Visibility */}
         <div className="bg-white rounded-2xl shadow p-4 space-y-2">
           <h3 className="font-semibold">Hotel / Base</h3>
           {hotel ? (
@@ -477,6 +492,56 @@ export default function BarcelonaTripPlanner(){
               <option value="transit">Public transit</option>
             </select>
             {routeMode === "transit" && <div className="text-xs text-slate-500 mt-1">Transit uses Google Directions via your secure Vercel API.</div>}
+          </div>
+
+          <hr className="my-3" />
+          <div className="space-y-2">
+            <label className="text-sm flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={showRoutes}
+                onChange={(e)=> setShowRoutes(e.target.checked)}
+              />
+              Show routes on map
+            </label>
+
+            {showRoutes && segments.length > 0 && (
+              <div className="rounded-lg border p-2 space-y-2">
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={()=>setAllLegs(true)}
+                    className="px-2 py-1 text-xs rounded bg-slate-200 hover:bg-slate-300"
+                  >
+                    Show all
+                  </button>
+                  <button
+                    type="button"
+                    onClick={()=>setAllLegs(false)}
+                    className="px-2 py-1 text-xs rounded bg-slate-200 hover:bg-slate-300"
+                  >
+                    Hide all
+                  </button>
+                </div>
+
+                <div className="space-y-1">
+                  {segments.map((_, i) => {
+                    const from = effectiveStops[i]?.place?.name || `Stop ${i+1}`;
+                    const to   = effectiveStops[i+1]?.place?.name || `Stop ${i+2}`;
+                    return (
+                      <label key={i} className="text-xs flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={!!visibleLegs[i]}
+                          onChange={(e)=> setVisibleLegs(v => ({ ...v, [i]: e.target.checked }))}
+                        />
+                        <span className="truncate">{`Leg ${i+1}: ${from} → ${to}`}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -515,22 +580,24 @@ export default function BarcelonaTripPlanner(){
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
             url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
           />
-          {effectiveStops.map((s,i)=>(
+        {effectiveStops.map((s,i)=>(
             <Marker
               key={i}
               position={[s.place.lat, s.place.lon]}
               icon={hotel && s.place.id === hotel.id ? hotelIcon : stopIcon}
             />
           ))}
-          {/* Colored polylines (transit or OSRM; dashed red on fallback) */}
-          {segments.map((s, i) => (
-            <Polyline key={i} positions={s.line} pathOptions={s.style || ROUTE_STYLE.driving} />
-          ))}
+          {/* Draw only when master toggle is on AND leg is checked */}
+          {showRoutes && segments.map((s, i) =>
+            visibleLegs[i] ? (
+              <Polyline key={i} positions={s.line} pathOptions={s.style || ROUTE_STYLE.driving} />
+            ) : null
+          )}
           <FitToDayBounds points={coords} />
         </MapContainer>
         <div className="absolute top-2 left-2 bg-white/90 backdrop-blur rounded-xl px-3 py-1 text-sm shadow">
           {coords.length>1
-            ? <div>Total: {formatDistance(totalMeters)} · ETA ~ {estimateHM(totalSeconds)}</div>
+            ? <div>Total (visible): {formatDistance(visibleMeters)} · ETA ~ {estimateHM(visibleSeconds)}</div>
             : <div>Add at least two places to see a route</div>}
           {routingError && <div className="text-rose-600">{routingError}</div>}
         </div>
@@ -622,19 +689,16 @@ export default function BarcelonaTripPlanner(){
 
   // turn Google 'steps' into a compact label (HTML allowed)
   function stepLabel(st) {
-    // If server returned Google steps, it usually looks like:
-    // { travel_mode: "WALKING" | "TRANSIT", html_instructions, transit_details? }
     const mode = st.travel_mode || "";
     if (mode === "TRANSIT" && st.transit_details) {
       const t = st.transit_details;
       const line = t.line?.short_name || t.line?.name || "Transit";
-      const vehicle = t.line?.vehicle?.type || "";
+      const vehicle = t.line?.vehicle?.type || "Transit";
       const from = t.departure_stop?.name || "";
       const to = t.arrival_stop?.name || "";
       const num = line ? ` (${line})` : "";
       return `${vehicle}${num}: ${from} → ${to}`;
     }
-    // default: render Google's human text if provided
     return st.html_instructions || (mode ? mode.toLowerCase() : "step");
   }
 }

@@ -11,12 +11,12 @@ export default async function handler(req, res) {
     }
 
     const params = new URLSearchParams({
-      origin,
-      destination,
+      origin,                       // "lat,lng"
+      destination,                  // "lat,lng"
       mode: "transit",
       alternatives: "false",
       transit_routing_preference: "fewer_transfers",
-      departure_time: departure || Math.floor(Date.now() / 1000),
+      departure_time: departure || Math.floor(Date.now() / 1000), // now, seconds
       key,
     });
 
@@ -25,15 +25,13 @@ export default async function handler(req, res) {
     const data = await r.json();
 
     if (data.status !== "OK" || !data.routes?.[0]?.legs?.[0]) {
-      return res
-        .status(502)
-        .json({ error: "No transit route", providerStatus: data.status, data });
+      return res.status(502).json({ error: "No transit route", providerStatus: data.status, data });
     }
 
     const route = data.routes[0];
     const leg = route.legs[0];
 
-    // Build optional step info if requested
+    // Optional: return step details (bus/metro/walk) when ?details=1 is passed
     let steps = undefined;
     if (details) {
       steps = leg.steps?.map((s) => ({
@@ -43,10 +41,7 @@ export default async function handler(req, res) {
       }));
     }
 
-    res.setHeader(
-      "Cache-Control",
-      "s-maxage=300, stale-while-revalidate=86400"
-    );
+    res.setHeader("Cache-Control", "s-maxage=300, stale-while-revalidate=86400");
     return res.status(200).json({
       overview_polyline: route.overview_polyline?.points || null,
       meters: leg.distance?.value ?? null,
